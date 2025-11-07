@@ -212,6 +212,7 @@ def _batch_annotate(
                 body["reasoning"] = {"effort": params.get("reasoning_effort")}
             if "temperature" in params:
                 body["temperature"] = params.get("temperature")
+            body["text"] = {"verbosity": "low"}
             requests.append(BatchRequest(custom_id=custom_id, url="/v1/responses", body=body))
         else:
             body = {

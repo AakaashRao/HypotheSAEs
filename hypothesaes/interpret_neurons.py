@@ -417,6 +417,8 @@ class NeuronInterpreter:
                 body["reasoning"] = {"effort": api_kwargs["reasoning_effort"]}
             if "temperature" in api_kwargs:
                 body["temperature"] = api_kwargs["temperature"]
+            # Prefer concise text outputs
+            body["text"] = {"verbosity": "low"}
         else:
             body = {
                 "model": model_id,
