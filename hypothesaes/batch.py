@@ -20,6 +20,10 @@ BATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_MAX_REQUESTS_PER_JOB = int(os.getenv("HYPOTHESAES_BATCH_MAX_REQUESTS", "50000"))
 DEFAULT_POLL_INTERVAL = float(os.getenv("HYPOTHESAES_BATCH_POLL_INTERVAL", "5"))
+def _get_completion_window() -> str:
+    # As of openai==1.105.0, only '24h' is allowed
+    val = os.getenv("HYPOTHESAES_BATCH_COMPLETION_WINDOW", "24h").strip()
+    return "24h" if val not in {"24h"} else val
 
 
 @dataclass
@@ -70,6 +74,7 @@ class OpenAIBatchExecutor:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         max_requests_per_job: int = DEFAULT_MAX_REQUESTS_PER_JOB,
         output_dir: Optional[Path] = None,
+        completion_window: str = _get_completion_window(),
     ) -> None:
         self.client = get_client()
         self.endpoint = endpoint
@@ -78,6 +83,7 @@ class OpenAIBatchExecutor:
         self.max_requests_per_job = max_requests_per_job
         self.output_dir = output_dir or BATCH_CACHE_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.completion_window = completion_window
 
     def execute(
         self,
@@ -120,6 +126,7 @@ class OpenAIBatchExecutor:
         batch = self.client.batches.create(
             input_file_id=input_file.id,
             endpoint=self.endpoint,
+            completion_window=self.completion_window,
             metadata={"task": self.task_name, **(metadata or {})},
         )
 
@@ -171,7 +178,7 @@ class OpenAIBatchExecutor:
         while True:
             batch = self.client.batches.retrieve(batch_id)
             status = getattr(batch, "status", None)
-            if status not in {"queued", "in_progress", "finalizing"}:
+            if status not in {"queued", "validating", "in_progress", "finalizing", "cancelling"}:
                 return {
                     "status": status,
                     "output_file_id": getattr(batch, "output_file_id", None),
@@ -223,4 +230,3 @@ def make_custom_id(prefix: str) -> str:
     """Return a collision-resistant custom_id for batch requests."""
 
     return f"{prefix}-{uuid.uuid4()}"
-

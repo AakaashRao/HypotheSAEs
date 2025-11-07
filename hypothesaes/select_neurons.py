@@ -2,7 +2,7 @@
 
 import time
 import numpy as np
-from typing import List, Optional, Callable, Tuple
+from typing import List, Optional, Callable, Tuple, Union
 from sklearn.linear_model import Lasso, LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import pearsonr
@@ -273,3 +273,100 @@ def select_neurons(
         )
     else:
         raise ValueError(f"Unknown selection method: {method}")
+
+# -----------------------------------------------------------------------------
+# Coverage-based filtering utilities
+# -----------------------------------------------------------------------------
+
+def filter_neurons_by_group_coverage(
+    groups: Union[List, np.ndarray],
+    activations: np.ndarray,
+    *,
+    min_groups_with_activity: int = 3,
+    min_activations_per_group: int = 10,
+    positive_only: bool = True,
+) -> np.ndarray:
+    """Return a boolean mask over neurons with sufficient activity across groups.
+
+    A neuron passes if it has at least ``min_activations_per_group`` activations
+    (positive activations if ``positive_only`` else non-zero activations) in at
+    least ``min_groups_with_activity`` distinct groups.
+    """
+    groups = np.asarray(groups)
+    if activations.ndim != 2:
+        raise ValueError("activations must be a 2D array (n_samples, n_neurons)")
+    if groups.shape[0] != activations.shape[0]:
+        raise ValueError("groups length must match number of rows in activations")
+
+    fired = (activations > 0) if positive_only else (activations != 0)
+    unique_groups = np.unique(groups)
+    if unique_groups.size == 0:
+        return np.ones(activations.shape[1], dtype=bool)
+
+    counts = []
+    for g in unique_groups:
+        mask = (groups == g)
+        if mask.any():
+            counts.append(fired[mask].sum(axis=0))  # (n_neurons,)
+    if not counts:
+        return np.ones(activations.shape[1], dtype=bool)
+
+    counts = np.stack(counts, axis=0)  # (n_groups, n_neurons)
+    groups_with_activity = (counts >= min_activations_per_group).sum(axis=0)
+    return groups_with_activity >= min_groups_with_activity
+
+
+def select_neurons_by_group_coverage(
+    groups: Union[List, np.ndarray],
+    activations: np.ndarray,
+    *,
+    min_groups_with_activity: int = 3,
+    min_activations_per_group: int = 10,
+    positive_only: bool = True,
+) -> List[int]:
+    """Return list of neuron indices satisfying the group coverage criterion."""
+    mask = filter_neurons_by_group_coverage(
+        groups=groups,
+        activations=activations,
+        min_groups_with_activity=min_groups_with_activity,
+        min_activations_per_group=min_activations_per_group,
+        positive_only=positive_only,
+    )
+    return np.nonzero(mask)[0].tolist()
+
+
+def filter_neurons_by_year_coverage(
+    years: Union[List[int], np.ndarray],
+    activations: np.ndarray,
+    *,
+    min_years_with_activity: int = 3,
+    min_activations_per_year: int = 10,
+    positive_only: bool = True,
+) -> np.ndarray:
+    """Specialization of coverage filter for year labels."""
+    return filter_neurons_by_group_coverage(
+        groups=np.asarray(years),
+        activations=activations,
+        min_groups_with_activity=min_years_with_activity,
+        min_activations_per_group=min_activations_per_year,
+        positive_only=positive_only,
+    )
+
+
+def select_neurons_by_year_coverage(
+    years: Union[List[int], np.ndarray],
+    activations: np.ndarray,
+    *,
+    min_years_with_activity: int = 3,
+    min_activations_per_year: int = 10,
+    positive_only: bool = True,
+) -> List[int]:
+    """Return neuron indices that fire sufficiently across at least N years."""
+    mask = filter_neurons_by_year_coverage(
+        years=years,
+        activations=activations,
+        min_years_with_activity=min_years_with_activity,
+        min_activations_per_year=min_activations_per_year,
+        positive_only=positive_only,
+    )
+    return np.nonzero(mask)[0].tolist()

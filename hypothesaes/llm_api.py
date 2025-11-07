@@ -3,6 +3,7 @@
 import os
 import time
 import openai
+import logging
 
 _CLIENT_OPENAI = None  # Module-level cache for the OpenAI client
 
@@ -49,12 +50,30 @@ def get_client():
     if _CLIENT_OPENAI is not None:
         return _CLIENT_OPENAI
 
+    _configure_openai_logging()
+
     api_key = os.environ.get('OPENAI_KEY_SAE')
     if api_key is None or '...' in api_key:
         raise ValueError("Please set the OPENAI_KEY_SAE environment variable before using functions which require the OpenAI API.")
 
     _CLIENT_OPENAI = openai.OpenAI(api_key=api_key)
     return _CLIENT_OPENAI
+
+def _configure_openai_logging() -> None:
+    """Suppress verbose HTTP logs from the OpenAI SDK unless explicitly enabled.
+
+    By default we reduce noise so tqdm progress bars render cleanly.
+    Set OPENAI_LOG=info|debug or HYPOTHESAES_SUPPRESS_HTTP_LOGS=0 to disable suppression.
+    """
+    suppress = os.environ.get("HYPOTHESAES_SUPPRESS_HTTP_LOGS", "1").lower() in {"1", "true", "yes"}
+    explicit_verbose = os.environ.get("OPENAI_LOG", "").lower() in {"info", "debug"}
+    if not suppress or explicit_verbose:
+        return
+
+    for name in ("openai", "openai._base_client", "httpx", "httpcore"):
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.WARNING)
+        logger.propagate = False
 
 def get_completion(
     prompt: str,

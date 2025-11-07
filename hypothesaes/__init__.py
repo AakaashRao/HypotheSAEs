@@ -26,7 +26,13 @@ from .interpret_neurons import (
     SamplingConfig
 )
 
-from .select_neurons import select_neurons
+from .select_neurons import (
+    select_neurons,
+    filter_neurons_by_group_coverage,
+    select_neurons_by_group_coverage,
+    filter_neurons_by_year_coverage,
+    select_neurons_by_year_coverage,
+)
 
 from .evaluation import score_hypotheses
 
@@ -59,6 +65,10 @@ __all__ = [
     
     # Selection and evaluation
     "select_neurons",
+    "filter_neurons_by_group_coverage",
+    "select_neurons_by_group_coverage",
+    "filter_neurons_by_year_coverage",
+    "select_neurons_by_year_coverage",
     "score_hypotheses",
     "annotate_texts_with_concepts",
     

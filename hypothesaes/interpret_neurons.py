@@ -1,7 +1,7 @@
 """Methods for interpreting SAE neurons using LLMs."""
 
 import numpy as np
-from typing import List, Dict, Optional, Tuple, Callable, Any
+from typing import List, Dict, Optional, Tuple, Callable, Any, Union
 from tqdm.auto import tqdm
 import concurrent.futures
 import os

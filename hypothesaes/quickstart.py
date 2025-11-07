@@ -283,7 +283,7 @@ def generate_hypotheses(
     print(f"\nStep 1: Selecting top {n_selected_neurons} predictive neurons")
     if n_selected_neurons > activations.shape[1]:
         raise ValueError(f"n_selected_neurons ({n_selected_neurons}) can be at most the total number of neurons ({activations.shape[1]})")
-    
+
     selected_neurons, scores = select_neurons(
         activations=activations,
         target=labels,
