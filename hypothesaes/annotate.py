@@ -68,7 +68,7 @@ def annotate_single_text(
     text: str,
     concept: str,
     annotate_prompt_name: str = "annotate",
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5-mini",
     max_words_per_example: Optional[int] = None,
     temperature: float = 0.0,
     max_tokens: int = 1,
@@ -161,9 +161,10 @@ def _annotation_model_params(model: str, temperature: float, max_tokens: int) ->
     """Return temperature/token kwargs compatible with the target model."""
 
     params: Dict[str, float] = {}
-    if model.startswith('o') or 'gpt-5' in model:
+    if model.startswith('o') or model.startswith('gpt-5') or 'gpt-5' in model:
         params["temperature"] = 1.0
         params["max_completion_tokens"] = max(512, max_tokens)
+        params["reasoning_effort"] = "low"
     else:
         params["temperature"] = temperature
         params["max_tokens"] = max_tokens
@@ -184,8 +185,10 @@ def _batch_annotate(
 ) -> None:
     annotate_prompt = load_prompt(annotate_prompt_name)
     model_id = resolve_model_name(model)
+    # Choose endpoint based on model family
+    use_responses = resolve_model_name(model).startswith("gpt-5")
     executor = batch_executor or OpenAIBatchExecutor(
-        endpoint="/v1/chat/completions",
+        endpoint="/v1/responses" if use_responses else "/v1/chat/completions",
         task_name="annotation",
     )
 
@@ -197,12 +200,26 @@ def _batch_annotate(
         truncated_text = truncate_text(text, max_words_per_example)
         prompt = annotate_prompt.format(hypothesis=concept, text=truncated_text)
         custom_id = make_custom_id("annotation")
-        body = {
-            "model": model_id,
-            "messages": [{"role": "user", "content": prompt}],
-            **params,
-        }
-        requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
+        if use_responses:
+            body = {
+                "model": model_id,
+                "input": prompt,
+            }
+            # Map params to Responses schema
+            if "max_completion_tokens" in params:
+                body["max_output_tokens"] = params.get("max_completion_tokens")
+            if "reasoning_effort" in params:
+                body["reasoning"] = {"effort": params.get("reasoning_effort")}
+            if "temperature" in params:
+                body["temperature"] = params.get("temperature")
+            requests.append(BatchRequest(custom_id=custom_id, url="/v1/responses", body=body))
+        else:
+            body = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}],
+                **params,
+            }
+            requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
         mapping[custom_id] = (text, concept)
 
     # Try to surface a light progress indicator while waiting on the batch
@@ -215,10 +232,24 @@ def _batch_annotate(
 
     for custom_id, response_body in result.responses.items():
         text, concept = mapping[custom_id]
-        choices = response_body.get("choices", [])
-        if not choices:
+        content = None
+        if "choices" in response_body:
+            choices = response_body.get("choices", [])
+            if choices:
+                content = choices[0]["message"].get("content", "")
+        elif "output_text" in response_body:
+            content = response_body.get("output_text", "")
+        elif "output" in response_body:
+            # Compose text from Responses API 'output'
+            parts = []
+            for item in response_body.get("output", []):
+                for part in item.get("content", []):
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+            content = "".join(parts)
+        if content is None:
             continue
-        content = choices[0]["message"].get("content", "").strip().lower()
+        content = content.strip().lower()
         annotation = parse_completion(content)
         if annotation is not None:
             _store_annotation(results, concept, text, annotation, cache)
@@ -295,7 +326,7 @@ def _local_annotate(
 
 def annotate(
     tasks: List[Tuple[str, str]],
-    model: str = "gpt-4.1-mini",
+    model: str = "gpt-5-mini",
     cache_path: Optional[str] = None,
     n_workers: int = DEFAULT_N_WORKERS,
     show_progress: bool = True,
@@ -390,7 +421,7 @@ def annotate(
 def annotate_texts_with_concepts(
     texts: List[str],
     concepts: List[str],
-    model: str = "gpt-4.1-mini",
+    model: str = "gpt-5-mini",
     cache_name: Optional[str] = None,
     progress_desc: str = "Annotating",
     show_progress: bool = True,

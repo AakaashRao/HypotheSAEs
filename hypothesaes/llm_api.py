@@ -34,9 +34,11 @@ model_abbrev_to_id = {
     "gpt-4.1-nano": "gpt-4.1-nano-2025-04-14",
     "gpt5": "gpt-5",
     "gpt-5": "gpt-5",
+    "gpt5-mini": "gpt-5-mini",
+    "gpt-5-mini": "gpt-5-mini",
 }
 
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-5-mini"
 
 
 def resolve_model_name(model: str) -> str:
@@ -104,13 +106,35 @@ def get_completion(
     
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=[{"role": "user", "content": prompt}],
-                timeout=timeout,
-                **kwargs
-            )
-            return response.choices[0].message.content
+            # Route GPT-5 family through the Responses API; others via Chat Completions
+            if "gpt-5" in model_id:
+                resp_kwargs = dict(kwargs)
+                # Map Chat kwargs to Responses schema
+                max_comp = resp_kwargs.pop("max_completion_tokens", None)
+                max_tok = resp_kwargs.pop("max_tokens", None)
+                if max_comp is not None:
+                    resp_kwargs["max_output_tokens"] = max_comp
+                elif max_tok is not None:
+                    resp_kwargs["max_output_tokens"] = max_tok
+                effort = resp_kwargs.pop("reasoning_effort", None)
+                if effort is not None:
+                    resp_kwargs["reasoning"] = {"effort": effort}
+                response = client.responses.create(
+                    model=model_id,
+                    input=prompt,
+                    timeout=timeout,
+                    **resp_kwargs,
+                )
+                text = _extract_output_text(response)
+                return text
+            else:
+                response = client.chat.completions.create(
+                    model=model_id,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=timeout,
+                    **kwargs
+                )
+                return response.choices[0].message.content
             
         except (openai.RateLimitError, openai.APITimeoutError) as e:
             if attempt == max_retries - 1:  # Last attempt
@@ -120,3 +144,43 @@ def get_completion(
             if attempt > 0:
                 print(f"API error: {e}; retrying in {wait_time:.1f}s... ({attempt + 1}/{max_retries})")
             time.sleep(wait_time)
+
+
+def _extract_output_text(response_obj) -> str:
+    """Best-effort extraction of text from Responses API objects.
+
+    Prefers the SDK's convenience attribute 'output_text'. Falls back to
+    inspecting the dumped dict for 'output_text' or composing text pieces from
+    'output[*].content[*].text'.
+    """
+    # SDK convenience
+    text = getattr(response_obj, "output_text", None)
+    if isinstance(text, str) and text:
+        return text
+
+    # Try model_dump() to dict
+    dump = None
+    for attr in ("model_dump", "to_dict"):
+        fn = getattr(response_obj, attr, None)
+        if callable(fn):
+            try:
+                dump = fn()
+                break
+            except Exception:
+                pass
+    if isinstance(dump, dict):
+        if isinstance(dump.get("output_text"), str) and dump["output_text"]:
+            return dump["output_text"]
+        out = dump.get("output") or []
+        pieces = []
+        for item in out:
+            content = item.get("content") if isinstance(item, dict) else None
+            if isinstance(content, list):
+                for part in content:
+                    txt = part.get("text") if isinstance(part, dict) else None
+                    if isinstance(txt, str):
+                        pieces.append(txt)
+        if pieces:
+            return "".join(pieces)
+    # Fallback: string cast
+    return str(response_obj)

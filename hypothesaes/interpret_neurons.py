@@ -186,8 +186,8 @@ class ScoringConfig:
 class NeuronInterpreter:
     def __init__(
         self,
-        interpreter_model: str = "gpt-4.1",
-        annotator_model: str = "gpt-4.1-mini",
+        interpreter_model: str = "gpt-5",
+        annotator_model: str = "gpt-5-mini",
         n_workers_interpretation: int = 10,
         n_workers_annotation: int = 30,
         cache_name: Optional[str] = None,
@@ -244,7 +244,9 @@ class NeuronInterpreter:
     
     def _parse_interpretation(self, response: str) -> str:
         """Parse raw LLM response into clean interpretation string."""
-        response = response.strip()
+        if response is None:
+            return None
+        response = str(response).strip()
         
         # Handle incomplete response (i.e. if the model started thinking but didn't finish)
         if '<think>' in response and '</think>' not in response:
@@ -253,8 +255,13 @@ class NeuronInterpreter:
         if '</think>' in response:
             response = response.split('</think>')[1].strip()
         
-        # Remove any prefixes
-        response = response.split('\n', 1)[0]
+        # Take the first non-empty line
+        lines = [ln.strip() for ln in response.splitlines()]
+        response = next((ln for ln in lines if ln), "")
+        if not response:
+            return None
+        
+        # Remove any bullet/quote prefixes
         prefixes = ['- ', '"-', '" -']
         for prefix in prefixes:
             if response.startswith(prefix):
@@ -341,8 +348,9 @@ class NeuronInterpreter:
         prompts: List[str],
         config: InterpretConfig,
     ) -> List[str]:
+        use_responses = resolve_model_name(self.interpreter_model).startswith("gpt-5")
         executor = self._batch_executor or OpenAIBatchExecutor(
-            endpoint="/v1/chat/completions",
+            endpoint="/v1/responses" if use_responses else "/v1/chat/completions",
             task_name="interpret",
         )
         self._batch_executor = executor
@@ -352,7 +360,8 @@ class NeuronInterpreter:
         for prompt in prompts:
             custom_id = make_custom_id("interpret")
             body = self._interpretation_request_body(prompt, config)
-            requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
+            url = "/v1/responses" if use_responses else "/v1/chat/completions"
+            requests.append(BatchRequest(custom_id=custom_id, url=url, body=body))
             custom_ids.append(custom_id)
 
         result = executor.execute(
@@ -367,11 +376,23 @@ class NeuronInterpreter:
             if not response_body:
                 outputs.append(None)
                 continue
-            choices = response_body.get("choices", [])
-            if not choices:
-                outputs.append(None)
-                continue
-            outputs.append(self._parse_interpretation(choices[0]["message"].get("content", "")))
+            if "choices" in response_body:
+                choices = response_body.get("choices", [])
+                if not choices:
+                    outputs.append(None)
+                    continue
+                outputs.append(self._parse_interpretation(choices[0]["message"].get("content", "")))
+            else:
+                # Responses API
+                text = response_body.get("output_text")
+                if not text and "output" in response_body:
+                    parts = []
+                    for item in response_body.get("output", []):
+                        for part in item.get("content", []):
+                            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                                parts.append(part["text"])
+                    text = "".join(parts)
+                outputs.append(self._parse_interpretation(text or ""))
 
         if result.errors:
             for custom_id, error in result.errors.items():
@@ -381,21 +402,34 @@ class NeuronInterpreter:
 
     def _interpretation_request_body(self, prompt: str, config: InterpretConfig) -> Dict[str, Any]:
         model_id = resolve_model_name(self.interpreter_model)
-        body: Dict[str, Any] = {
-            "model": model_id,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        api_kwargs = self._interpretation_api_kwargs(config)
-        if "timeout" in api_kwargs:
-            api_kwargs = {k: v for k, v in api_kwargs.items() if k != "timeout"}
-        body.update(api_kwargs)
+        body: Dict[str, Any] = {}
+        # Use Responses API schema for GPT-5; Chat Completions for others
+        if model_id.startswith("gpt-5"):
+            body = {"model": model_id, "input": prompt}
+            api_kwargs = self._interpretation_api_kwargs(config)
+            # Map to Responses schema
+            if "max_completion_tokens" in api_kwargs:
+                body["max_output_tokens"] = api_kwargs["max_completion_tokens"]
+            if "reasoning_effort" in api_kwargs:
+                body["reasoning"] = {"effort": api_kwargs["reasoning_effort"]}
+            if "temperature" in api_kwargs:
+                body["temperature"] = api_kwargs["temperature"]
+        else:
+            body = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            api_kwargs = self._interpretation_api_kwargs(config)
+            if "timeout" in api_kwargs:
+                api_kwargs = {k: v for k, v in api_kwargs.items() if k != "timeout"}
+            body.update(api_kwargs)
         return body
 
     def _interpretation_api_kwargs(self, config: InterpretConfig) -> Dict[str, Any]:
         if "gpt-5" in self.interpreter_model:
             return {
                 "max_completion_tokens": config.llm.max_interpretation_tokens,
-                "reasoning_effort": "minimal",
+                "reasoning_effort": "low",
             }
         if self.interpreter_model.startswith("o"):
             return {
