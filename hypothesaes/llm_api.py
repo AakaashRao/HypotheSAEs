@@ -121,7 +121,7 @@ def get_completion(
                 resp_kwargs["max_output_tokens"] = max_tok
             # Enforce a generous default for GPT-5 if not provided
             if "max_output_tokens" not in resp_kwargs:
-                resp_kwargs["max_output_tokens"] = 2000
+                resp_kwargs["max_output_tokens"] = 5000
             effort = resp_kwargs.pop("reasoning_effort", None)
             resp_kwargs["reasoning"] = {"effort": effort or 'low'}
             # Prefer concise text outputs to fit within token budget
