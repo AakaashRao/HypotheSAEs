@@ -11,6 +11,7 @@ data/*
 notebooks/testing_notebook.ipynb
 local_llm_experiments/results/*
 AGENTS.md
+scripts/smoke_responses.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

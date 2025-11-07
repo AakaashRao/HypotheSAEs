@@ -116,6 +116,9 @@ def get_completion(
                     resp_kwargs["max_output_tokens"] = max_comp
                 elif max_tok is not None:
                     resp_kwargs["max_output_tokens"] = max_tok
+                # Enforce a generous default for GPT-5 if not provided
+                if "max_output_tokens" not in resp_kwargs:
+                    resp_kwargs["max_output_tokens"] = 1000
                 effort = resp_kwargs.pop("reasoning_effort", None)
                 if effort is not None:
                     resp_kwargs["reasoning"] = {"effort": effort}
@@ -125,6 +128,11 @@ def get_completion(
                     timeout=timeout,
                     **resp_kwargs,
                 )
+                # Raise if the response is not completed (e.g., truncated/incomplete)
+                status = getattr(response, "status", None)
+                if status and status != "completed":
+                    details = getattr(response, "incomplete_details", None)
+                    raise RuntimeError(f"Responses API returned status={status}; details={details}")
                 text = _extract_output_text(response)
                 return text
             else:
@@ -182,5 +190,5 @@ def _extract_output_text(response_obj) -> str:
                         pieces.append(txt)
         if pieces:
             return "".join(pieces)
-    # Fallback: string cast
-    return str(response_obj)
+    # Fallback: return empty string to signal "no text available"
+    return ""

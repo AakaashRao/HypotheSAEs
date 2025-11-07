@@ -274,17 +274,16 @@ class NeuronInterpreter:
         prompt: str,
         config: InterpretConfig,
     ) -> Optional[str]:
-        """Send a single prompt to the interpreter model and return the parsed interpretation."""
-        try:
-            response = get_completion(
-                prompt=prompt,
-                model=self.interpreter_model,
-                **self._interpretation_api_kwargs(config),
-            )
-            return self._parse_interpretation(response)
-        except Exception as e:
-            print(f"Failed to get interpretation: {e}")
-            return None
+        """Send a single prompt to the interpreter model and return the parsed interpretation.
+
+        Raise on API errors or incomplete responses to surface failures early.
+        """
+        response = get_completion(
+            prompt=prompt,
+            model=self.interpreter_model,
+            **self._interpretation_api_kwargs(config),
+        )
+        return self._parse_interpretation(response)
 
     def _execute_prompts(
         self,
@@ -376,6 +375,10 @@ class NeuronInterpreter:
             if not response_body:
                 outputs.append(None)
                 continue
+            # If Responses API object indicates incomplete/failed, raise
+            status = response_body.get("status")
+            if status and status not in {"completed"}:
+                raise RuntimeError(f"Interpretation batch item {custom_id} returned status={status}")
             if "choices" in response_body:
                 choices = response_body.get("choices", [])
                 if not choices:
@@ -427,8 +430,9 @@ class NeuronInterpreter:
 
     def _interpretation_api_kwargs(self, config: InterpretConfig) -> Dict[str, Any]:
         if "gpt-5" in self.interpreter_model:
+            # Force a generous token budget for GPT-5 reasoning outputs
             return {
-                "max_completion_tokens": config.llm.max_interpretation_tokens,
+                "max_completion_tokens": 1000,
                 "reasoning_effort": "low",
             }
         if self.interpreter_model.startswith("o"):
