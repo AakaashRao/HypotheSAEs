@@ -73,7 +73,7 @@ def annotate_single_text(
     temperature: float = 0.0,
     max_tokens: int = 1,
     max_retries: int = 3,
-    timeout: float = 5.0,
+    timeout: float = 300.0,
 ) -> Tuple[Optional[int], float]:  # Return tuple of (result, api_time)
     """
     Annotate a single text with given concept using LLM.

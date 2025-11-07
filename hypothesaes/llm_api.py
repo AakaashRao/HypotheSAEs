@@ -80,7 +80,7 @@ def _configure_openai_logging() -> None:
 def get_completion(
     prompt: str,
     model: str = DEFAULT_MODEL,
-    timeout: float = 15.0,
+    timeout: float = 300.0,
     max_retries: int = 3,
     backoff_factor: float = 2.0,
     **kwargs
@@ -118,7 +118,7 @@ def get_completion(
                     resp_kwargs["max_output_tokens"] = max_tok
                 # Enforce a generous default for GPT-5 if not provided
                 if "max_output_tokens" not in resp_kwargs:
-                    resp_kwargs["max_output_tokens"] = 1000
+                    resp_kwargs["max_output_tokens"] = 2000
                 effort = resp_kwargs.pop("reasoning_effort", None)
                 if effort is not None:
                     resp_kwargs["reasoning"] = {"effort": effort}
