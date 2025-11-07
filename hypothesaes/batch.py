@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from .llm_api import get_client
+from tqdm.auto import tqdm
 
 # Default locations and limits can be overridden with env vars.
 _DEFAULT_BATCH_DIR = Path(__file__).parent.parent / "batch_cache"
@@ -90,20 +91,27 @@ class OpenAIBatchExecutor:
         requests: List[BatchRequest],
         *,
         metadata: Optional[Dict[str, str]] = None,
+        show_progress: bool = False,
+        progress_desc: Optional[str] = None,
     ) -> BatchResult:
         if not requests:
             return BatchResult(responses={}, errors={})
 
         aggregated_responses: Dict[str, Dict[str, Any]] = {}
         aggregated_errors: Dict[str, Dict[str, Any]] = {}
-        for chunk_idx, chunk in enumerate(_chunk_iterable(requests, self.max_requests_per_job)):
+        chunks = list(_chunk_iterable(requests, self.max_requests_per_job))
+        outer_bar = tqdm(total=len(chunks), desc=progress_desc or f"Submitting {len(chunks)} batch chunk(s)", disable=not show_progress)
+        for chunk_idx, chunk in enumerate(chunks):
             chunk_list = list(chunk)
             chunk_result = self._execute_chunk(
                 chunk_list,
                 metadata={**(metadata or {}), "chunk": str(chunk_idx)},
+                show_progress=show_progress,
             )
             aggregated_responses.update(chunk_result.responses)
             aggregated_errors.update(chunk_result.errors)
+            outer_bar.update(1)
+        outer_bar.close()
 
         return BatchResult(responses=aggregated_responses, errors=aggregated_errors)
 
@@ -115,6 +123,7 @@ class OpenAIBatchExecutor:
         requests: List[BatchRequest],
         *,
         metadata: Optional[Dict[str, str]] = None,
+        show_progress: bool = False,
     ) -> BatchResult:
         temp_path = self._write_jsonl(requests)
         try:
@@ -139,7 +148,12 @@ class OpenAIBatchExecutor:
             "metadata": metadata,
         })
 
-        final_state = self._poll_batch(batch.id)
+        # Progress indicator while waiting on server-side processing
+        desc = f"Waiting for batch {batch.id} ({len(requests)} reqs)"
+        progress = tqdm(total=1, desc=desc, disable=not show_progress)
+        final_state = self._poll_batch(batch.id, progress)
+        if progress is not None:
+            progress.close()
         self._write_json(batch_dir / "response_summary.json", final_state)
 
         if final_state.get("status") != "completed":
@@ -174,10 +188,17 @@ class OpenAIBatchExecutor:
 
         return BatchResult(responses=responses, errors=errors)
 
-    def _poll_batch(self, batch_id: str) -> Dict[str, Any]:
+    def _poll_batch(self, batch_id: str, progress: Optional[tqdm] = None) -> Dict[str, Any]:
         while True:
             batch = self.client.batches.retrieve(batch_id)
             status = getattr(batch, "status", None)
+            if progress is not None:
+                progress.set_postfix_str(str(status))
+                # tick only at completion; refresh otherwise
+                if status in {"completed", "failed", "expired", "cancelled"}:
+                    progress.update(1)
+                else:
+                    progress.refresh()
             if status not in {"queued", "validating", "in_progress", "finalizing", "cancelling"}:
                 return {
                     "status": status,

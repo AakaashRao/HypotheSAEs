@@ -165,6 +165,7 @@ def get_openai_embeddings(
         batch_embeddings = _batch_embed_openai(
             texts=texts_to_embed,
             model=model,
+            show_progress=show_progress,
         )
         text2embedding.update(batch_embeddings)
         if cache_name:
@@ -294,6 +295,7 @@ def get_local_embeddings(
 def _batch_embed_openai(
     texts: List[str],
     model: str,
+    show_progress: bool = False,
 ) -> Dict[str, np.ndarray]:
     executor = OpenAIBatchExecutor(
         endpoint="/v1/embeddings",
@@ -313,7 +315,12 @@ def _batch_embed_openai(
         requests.append(BatchRequest(custom_id=custom_id, url="/v1/embeddings", body=body))
         mapping[custom_id] = text
 
-    result = executor.execute(requests, metadata={"type": "embeddings"})
+    result = executor.execute(
+        requests,
+        metadata={"type": "embeddings"},
+        show_progress=show_progress,
+        progress_desc=f"Embedding {len(texts)} texts (batch)",
+    )
     embeddings: Dict[str, np.ndarray] = {}
 
     for custom_id, response_body in result.responses.items():

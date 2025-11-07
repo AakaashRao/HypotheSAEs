@@ -355,7 +355,12 @@ class NeuronInterpreter:
             requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
             custom_ids.append(custom_id)
 
-        result = executor.execute(requests, metadata={"type": "interpret"})
+        result = executor.execute(
+            requests,
+            metadata={"type": "interpret"},
+            show_progress=True,
+            progress_desc=f"Generating {len(prompts)} interpretations (batch)",
+        )
         outputs: List[Optional[str]] = []
         for custom_id in custom_ids:
             response_body = result.responses.get(custom_id)

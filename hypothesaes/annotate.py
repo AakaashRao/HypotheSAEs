@@ -205,7 +205,13 @@ def _batch_annotate(
         requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
         mapping[custom_id] = (text, concept)
 
-    result = executor.execute(requests, metadata={"type": "annotation"})
+    # Try to surface a light progress indicator while waiting on the batch
+    result = executor.execute(
+        requests,
+        metadata={"type": "annotation"},
+        show_progress=True,
+        progress_desc=f"{len(requests)} annotation requests (batch)",
+    )
 
     for custom_id, response_body in result.responses.items():
         text, concept = mapping[custom_id]
