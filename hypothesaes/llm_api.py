@@ -4,6 +4,7 @@ import os
 import time
 import openai
 import logging
+import pdb
 
 _CLIENT_OPENAI = None  # Module-level cache for the OpenAI client
 
@@ -103,46 +104,43 @@ def get_completion(
     """
     client = get_client()
     model_id = resolve_model_name(model)
+    # Always use GPT-5 family via Responses API
+    if not str(model_id).startswith("gpt-5"):
+        model_id = resolve_model_name("gpt-5-mini")
     
     for attempt in range(max_retries):
         try:
-            # Route GPT-5 family through the Responses API; others via Chat Completions
-            if "gpt-5" in model_id:
-                resp_kwargs = dict(kwargs)
-                # Map Chat kwargs to Responses schema
-                max_comp = resp_kwargs.pop("max_completion_tokens", None)
-                max_tok = resp_kwargs.pop("max_tokens", None)
-                if max_comp is not None:
-                    resp_kwargs["max_output_tokens"] = max_comp
-                elif max_tok is not None:
-                    resp_kwargs["max_output_tokens"] = max_tok
-                # Enforce a generous default for GPT-5 if not provided
-                if "max_output_tokens" not in resp_kwargs:
-                    resp_kwargs["max_output_tokens"] = 5000
-                effort = resp_kwargs.pop("reasoning_effort", None)
-                if effort is not None:
-                    resp_kwargs["reasoning"] = {"effort": 'low'}
-                response = client.responses.create(
-                    model=model_id,
-                    input=prompt,
-                    timeout=timeout,
-                    **resp_kwargs,
-                )
-                # Raise if the response is not completed (e.g., truncated/incomplete)
-                status = getattr(response, "status", None)
-                if status and status != "completed":
-                    details = getattr(response, "incomplete_details", None)
-                    raise RuntimeError(f"Responses API returned status={status}; details={details}")
-                text = _extract_output_text(response)
-                return text
-            else:
-                response = client.chat.completions.create(
-                    model=model_id,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=timeout,
-                    **kwargs
-                )
-                return response.choices[0].message.content
+            # Always use the Responses API
+            resp_kwargs = dict(kwargs)
+            # Map legacy kwarg names
+            max_comp = resp_kwargs.pop("max_completion_tokens", None)
+            max_tok = resp_kwargs.pop("max_tokens", None)
+            if max_comp is not None:
+                resp_kwargs["max_output_tokens"] = max_comp
+            elif max_tok is not None:
+                resp_kwargs["max_output_tokens"] = max_tok
+            # Enforce a generous default for GPT-5 if not provided
+            if "max_output_tokens" not in resp_kwargs:
+                resp_kwargs["max_output_tokens"] = 2000
+            effort = resp_kwargs.pop("reasoning_effort", None)
+            resp_kwargs["reasoning"] = {"effort": effort or 'low'}
+            # Prefer concise text outputs to fit within token budget
+            if "text" not in resp_kwargs:
+                resp_kwargs["text"] = {"verbosity": "low"}
+            response = client.responses.create(
+                model=model_id,
+                input=prompt,
+                timeout=timeout,
+                **resp_kwargs,
+            )
+            # Raise if the response is not completed (e.g., truncated/incomplete)
+            status = getattr(response, "status", None)
+            if status and status != "completed":
+                details = getattr(response, "incomplete_details", None)
+                pdb.set_trace()
+                raise RuntimeError(f"Responses API returned status={status}; details={details}")
+            text = _extract_output_text(response)
+            return text
             
         except (openai.RateLimitError, openai.APITimeoutError) as e:
             if attempt == max_retries - 1:  # Last attempt

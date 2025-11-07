@@ -185,10 +185,9 @@ def _batch_annotate(
 ) -> None:
     annotate_prompt = load_prompt(annotate_prompt_name)
     model_id = resolve_model_name(model)
-    # Choose endpoint based on model family
-    use_responses = resolve_model_name(model).startswith("gpt-5")
+    # Always use Responses API for batch annotation
     executor = batch_executor or OpenAIBatchExecutor(
-        endpoint="/v1/responses" if use_responses else "/v1/chat/completions",
+        endpoint="/v1/responses",
         task_name="annotation",
     )
 
@@ -200,27 +199,19 @@ def _batch_annotate(
         truncated_text = truncate_text(text, max_words_per_example)
         prompt = annotate_prompt.format(hypothesis=concept, text=truncated_text)
         custom_id = make_custom_id("annotation")
-        if use_responses:
-            body = {
-                "model": model_id,
-                "input": prompt,
-            }
-            # Map params to Responses schema
-            if "max_completion_tokens" in params:
-                body["max_output_tokens"] = params.get("max_completion_tokens")
-            if "reasoning_effort" in params:
-                body["reasoning"] = {"effort": params.get("reasoning_effort")}
-            if "temperature" in params:
-                body["temperature"] = params.get("temperature")
-            body["text"] = {"verbosity": "low"}
-            requests.append(BatchRequest(custom_id=custom_id, url="/v1/responses", body=body))
-        else:
-            body = {
-                "model": model_id,
-                "messages": [{"role": "user", "content": prompt}],
-                **params,
-            }
-            requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
+        body = {
+            "model": model_id,
+            "input": prompt,
+        }
+        # Map params to Responses schema
+        if "max_completion_tokens" in params:
+            body["max_output_tokens"] = params.get("max_completion_tokens")
+        if "reasoning_effort" in params:
+            body["reasoning"] = {"effort": params.get("reasoning_effort")}
+        if "temperature" in params:
+            body["temperature"] = params.get("temperature")
+        body["text"] = {"verbosity": "low"}
+        requests.append(BatchRequest(custom_id=custom_id, url="/v1/responses", body=body))
         mapping[custom_id] = (text, concept)
 
     # Try to surface a light progress indicator while waiting on the batch
