@@ -9,12 +9,19 @@ import json
 from pathlib import Path
 import time
 
-from .llm_api import get_completion
+from .llm_api import get_completion, resolve_model_name
 from .llm_local import is_local_model, get_local_completions
 from .utils import load_prompt, truncate_text
+from .batch import (
+    BatchRequest,
+    OpenAIBatchExecutor,
+    choose_backend,
+    make_custom_id,
+)
 
 CACHE_DIR = os.path.join(Path(__file__).parent.parent, 'annotation_cache')
-DEFAULT_N_WORKERS = 30 
+DEFAULT_N_WORKERS = 30
+BATCH_AUTO_THRESHOLD = int(os.getenv("HYPOTHESAES_ANNOTATION_BATCH_THRESHOLD", "1000"))
 
 def get_annotation_cache(cache_path: str) -> dict:
     """Load cached annotations from JSON file."""
@@ -79,18 +86,15 @@ def annotate_single_text(
     prompt = annotate_prompt.format(hypothesis=concept, text=text)
     
     total_api_time = 0.0
+    params = _annotation_model_params(model, temperature, max_tokens)
     for attempt in range(max_retries):
         try:
             start_time = time.time()
-            if model.startswith('o') or 'gpt-5' in model:
-                temperature = 1.0
-                max_tokens = 512
             response_text = get_completion(
                 prompt=prompt,
                 model=model,
-                temperature=temperature,
-                max_completion_tokens=max_tokens,
-                timeout=timeout
+                timeout=timeout,
+                **params,
             ).strip().lower()
             total_api_time += time.time() - start_time
             
@@ -151,6 +155,72 @@ def _parallel_annotate(
                     _store_annotation(results, concept, text, annotation, cache)
             except Exception as e:
                 print(f"Failed to annotate text for concept '{concept}' during retry: {e}")
+
+
+def _annotation_model_params(model: str, temperature: float, max_tokens: int) -> Dict[str, float]:
+    """Return temperature/token kwargs compatible with the target model."""
+
+    params: Dict[str, float] = {}
+    if model.startswith('o') or 'gpt-5' in model:
+        params["temperature"] = 1.0
+        params["max_completion_tokens"] = max(512, max_tokens)
+    else:
+        params["temperature"] = temperature
+        params["max_tokens"] = max_tokens
+    return params
+
+
+def _batch_annotate(
+    tasks: List[Tuple[str, str]],
+    model: str,
+    results: Dict[str, Dict[str, int]],
+    cache: Optional[dict] = None,
+    annotate_prompt_name: str = "annotate",
+    max_words_per_example: Optional[int] = None,
+    temperature: float = 0.0,
+    max_tokens: int = 1,
+    batch_executor: Optional[OpenAIBatchExecutor] = None,
+    **_ignored,
+) -> None:
+    annotate_prompt = load_prompt(annotate_prompt_name)
+    model_id = resolve_model_name(model)
+    executor = batch_executor or OpenAIBatchExecutor(
+        endpoint="/v1/chat/completions",
+        task_name="annotation",
+    )
+
+    requests: List[BatchRequest] = []
+    mapping: Dict[str, Tuple[str, str]] = {}
+    params = _annotation_model_params(model, temperature, max_tokens)
+
+    for text, concept in tasks:
+        truncated_text = truncate_text(text, max_words_per_example)
+        prompt = annotate_prompt.format(hypothesis=concept, text=truncated_text)
+        custom_id = make_custom_id("annotation")
+        body = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": prompt}],
+            **params,
+        }
+        requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
+        mapping[custom_id] = (text, concept)
+
+    result = executor.execute(requests, metadata={"type": "annotation"})
+
+    for custom_id, response_body in result.responses.items():
+        text, concept = mapping[custom_id]
+        choices = response_body.get("choices", [])
+        if not choices:
+            continue
+        content = choices[0]["message"].get("content", "").strip().lower()
+        annotation = parse_completion(content)
+        if annotation is not None:
+            _store_annotation(results, concept, text, annotation, cache)
+
+    if result.errors:
+        for custom_id, error in result.errors.items():
+            text, concept = mapping.get(custom_id, ("?", "?"))
+            print(f"Batch annotation error for concept '{concept}': {error}")
 
 def _local_annotate(
     tasks: List[Tuple[str, str]],
@@ -226,6 +296,8 @@ def annotate(
     progress_desc: str = "Annotating",
     use_cache_only: bool = False,
     uncached_value: int = 0,
+    backend: str = "live",
+    auto_batch_threshold: int = BATCH_AUTO_THRESHOLD,
     **annotation_kwargs
 ) -> Dict[Tuple[str, str], int]:
     """
@@ -239,7 +311,9 @@ def annotate(
         show_progress: Whether to show progress bar
         use_cache_only: Whether to only use the cache and set uncached items to uncached_value
         uncached_value: Value to set for uncached items
-        **annotation_kwargs: Additional arguments passed to annotate_single_text
+        backend: 'live', 'batch', or 'auto'
+        auto_batch_threshold: Threshold used when backend='auto'
+        **annotation_kwargs: Additional arguments passed to annotate_single_text/_batch_annotate
     
     Returns:
         Dictionary mapping (text, concept) to annotation result
@@ -271,6 +345,7 @@ def annotate(
 
     # Annotate uncached tasks
     if uncached_tasks:
+        backend_mode = choose_backend(backend, len(uncached_tasks), auto_batch_threshold)
         if is_local_model(model):
             _local_annotate(
                 tasks=uncached_tasks,
@@ -278,6 +353,14 @@ def annotate(
                 cache=cache,
                 results=results,
                 show_progress=show_progress,
+                **annotation_kwargs,
+            )
+        elif backend_mode == "batch":
+            _batch_annotate(
+                tasks=uncached_tasks,
+                model=model,
+                results=results,
+                cache=cache,
                 **annotation_kwargs,
             )
         else:
@@ -305,6 +388,8 @@ def annotate_texts_with_concepts(
     cache_name: Optional[str] = None,
     progress_desc: str = "Annotating",
     show_progress: bool = True,
+    backend: str = "live",
+    auto_batch_threshold: int = BATCH_AUTO_THRESHOLD,
     **annotation_kwargs
 ) -> Dict[str, np.ndarray]:
     """
@@ -323,6 +408,8 @@ def annotate_texts_with_concepts(
         n_workers=annotation_kwargs.pop('n_workers', DEFAULT_N_WORKERS),
         show_progress=show_progress,
         progress_desc=progress_desc,
+        backend=backend,
+        auto_batch_threshold=auto_batch_threshold,
         **annotation_kwargs
     )
     

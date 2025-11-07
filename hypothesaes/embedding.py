@@ -12,6 +12,8 @@ import glob
 import torch
 import openai
 from .utils import filter_invalid_texts
+from .batch import BatchRequest, OpenAIBatchExecutor, choose_backend, make_custom_id
+from .llm_api import resolve_model_name
 from sentence_transformers import SentenceTransformer
 import torch
 import gc
@@ -19,6 +21,7 @@ import gc
 
 # Use environment variable for cache dir if set, otherwise use default
 CACHE_DIR = os.getenv('EMB_CACHE_DIR') or os.path.join(Path(__file__).parent.parent, 'emb_cache')
+EMBED_AUTO_BATCH_THRESHOLD = int(os.getenv('HYPOTHESAES_EMBED_BATCH_THRESHOLD', '2000'))
 
 def _embed_batch_openai(
         batch: List[str], 
@@ -142,6 +145,8 @@ def get_openai_embeddings(
     show_progress: bool = True,
     chunk_size: int = 50000,
     timeout: float = 10.0,
+    backend: str = "live",
+    auto_batch_threshold: int = EMBED_AUTO_BATCH_THRESHOLD,
 ) -> Dict[str, np.ndarray]:
     """Get embeddings using OpenAI API with parallel processing and chunked caching."""
     # Filter out None values and empty strings
@@ -154,21 +159,37 @@ def get_openai_embeddings(
     if not texts_to_embed:
         return text2embedding
     
+    backend_mode = choose_backend(backend, len(texts_to_embed), auto_batch_threshold)
+
+    if backend_mode == "batch":
+        batch_embeddings = _batch_embed_openai(
+            texts=texts_to_embed,
+            model=model,
+        )
+        text2embedding.update(batch_embeddings)
+        if cache_name:
+            next_chunk_idx = _get_next_chunk_index(cache_name)
+            items = list(batch_embeddings.items())
+            for i in range(0, len(items), chunk_size):
+                chunk_dict = dict(items[i:i + chunk_size])
+                next_chunk_idx = _save_embedding_chunk(cache_name, chunk_dict, next_chunk_idx)
+        return text2embedding
+
     from .llm_api import get_client
     client = get_client()
-    
+
     # Process in chunks
     next_chunk_idx = _get_next_chunk_index(cache_name)
-    
+
     # Create chunk ranges
     chunk_ranges = [(i, min(i+chunk_size, len(texts_to_embed))) 
                    for i in range(0, len(texts_to_embed), chunk_size)]
-    
+
     # Outer progress bar for chunks
     chunk_iterator = chunk_ranges
     if show_progress:
         chunk_iterator = tqdm(chunk_iterator, desc="Processing chunks", total=len(chunk_ranges))
-    
+
     for chunk_start, chunk_end in chunk_iterator:
         chunk_texts = texts_to_embed[chunk_start:chunk_end]
         chunk_embeddings = {}
@@ -268,3 +289,54 @@ def get_local_embeddings(
         torch.cuda.empty_cache()
     
     return text2embedding
+
+
+def _batch_embed_openai(
+    texts: List[str],
+    model: str,
+) -> Dict[str, np.ndarray]:
+    executor = OpenAIBatchExecutor(
+        endpoint="/v1/embeddings",
+        task_name="embeddings",
+    )
+    model_id = resolve_model_name(model)
+    requests: List[BatchRequest] = []
+    mapping: Dict[str, str] = {}
+
+    for text in texts:
+        truncated_text = _truncate_to_tokens(text)
+        custom_id = make_custom_id("embedding")
+        body = {
+            "model": model_id,
+            "input": truncated_text,
+        }
+        requests.append(BatchRequest(custom_id=custom_id, url="/v1/embeddings", body=body))
+        mapping[custom_id] = text
+
+    result = executor.execute(requests, metadata={"type": "embeddings"})
+    embeddings: Dict[str, np.ndarray] = {}
+
+    for custom_id, response_body in result.responses.items():
+        text = mapping.get(custom_id)
+        if text is None:
+            continue
+        data = response_body.get("data", [])
+        if not data:
+            continue
+        vector = np.array(data[0].get("embedding", []), dtype=np.float32)
+        embeddings[text] = vector
+
+    if result.errors:
+        for custom_id, error in result.errors.items():
+            text = mapping.get(custom_id, "?")
+            print(f"Batch embedding error for text '{text[:40]}...': {error}")
+
+    return embeddings
+
+
+def _truncate_to_tokens(text: str, max_tokens: int = 8192) -> str:
+    enc = tiktoken.get_encoding("cl100k_base")
+    tokens = enc.encode(text.strip())
+    if len(tokens) <= max_tokens:
+        return text
+    return enc.decode(tokens[:max_tokens])

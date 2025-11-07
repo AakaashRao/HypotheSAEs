@@ -7,10 +7,11 @@ import concurrent.futures
 import os
 from dataclasses import dataclass, field
 
-from .llm_api import get_completion
+from .llm_api import get_completion, resolve_model_name
 from .llm_local import is_local_model, get_local_completions
 from .utils import load_prompt, truncate_text
-from .annotate import annotate, CACHE_DIR
+from .annotate import annotate, CACHE_DIR, BATCH_AUTO_THRESHOLD
+from .batch import BatchRequest, OpenAIBatchExecutor, choose_backend, make_custom_id
 
 DEFAULT_TASK_SPECIFIC_INSTRUCTIONS = """An example feature could be:
 - "uses multiple adjectives to describe colors"
@@ -18,6 +19,10 @@ DEFAULT_TASK_SPECIFIC_INSTRUCTIONS = """An example feature could be:
 - "contains multiple single-digit numbers\""""
 
 DEFAULT_MAX_INTERPRETATION_TOKENS_THINKING = 8192
+DEFAULT_INTERPRETATION_BATCH_THRESHOLD = int(os.getenv(
+    "HYPOTHESAES_INTERPRETATION_BATCH_THRESHOLD",
+    "200"
+))
 
 def sample_top_zero(
     texts: List[str],
@@ -186,6 +191,10 @@ class NeuronInterpreter:
         n_workers_interpretation: int = 10,
         n_workers_annotation: int = 30,
         cache_name: Optional[str] = None,
+        llm_backend: str = "live",
+        annotation_backend: str = "live",
+        interpretation_auto_batch_threshold: int = DEFAULT_INTERPRETATION_BATCH_THRESHOLD,
+        annotation_auto_batch_threshold: int = BATCH_AUTO_THRESHOLD,
     ):
         """Initialize a NeuronInterpreter."""
         self.interpreter_model = interpreter_model
@@ -193,6 +202,11 @@ class NeuronInterpreter:
         self.n_workers_interpretation = n_workers_interpretation
         self.n_workers_annotation = n_workers_annotation
         self.cache_name = cache_name
+        self.llm_backend = llm_backend
+        self.annotation_backend = annotation_backend
+        self.interpretation_auto_batch_threshold = interpretation_auto_batch_threshold
+        self.annotation_auto_batch_threshold = annotation_auto_batch_threshold
+        self._batch_executor = None
 
     def _build_interpretation_prompt(
         self,
@@ -255,28 +269,11 @@ class NeuronInterpreter:
     ) -> Optional[str]:
         """Send a single prompt to the interpreter model and return the parsed interpretation."""
         try:
-            if "gpt-5" in self.interpreter_model:
-                response = get_completion(
-                    prompt=prompt,
-                    model=self.interpreter_model,
-                    max_completion_tokens=config.llm.max_interpretation_tokens,
-                    reasoning_effort="minimal",
-                )
-            elif self.interpreter_model.startswith("o"):
-                response = get_completion(
-                    prompt=prompt,
-                    model=self.interpreter_model,
-                    max_completion_tokens=config.llm.max_interpretation_tokens,
-                    reasoning_effort="low",
-                )
-            else:
-                response = get_completion(
-                    prompt=prompt,
-                    model=self.interpreter_model,
-                    temperature=config.llm.temperature,
-                    max_tokens=config.llm.max_interpretation_tokens,
-                    timeout=config.llm.timeout,
-                )
+            response = get_completion(
+                prompt=prompt,
+                model=self.interpreter_model,
+                **self._interpretation_api_kwargs(config),
+            )
             return self._parse_interpretation(response)
         except Exception as e:
             print(f"Failed to get interpretation: {e}")
@@ -311,6 +308,15 @@ class NeuronInterpreter:
             )
             return [self._parse_interpretation(r) for r in raw_responses]
 
+        backend_mode = choose_backend(
+            self.llm_backend,
+            len(valid_prompts),
+            self.interpretation_auto_batch_threshold,
+        )
+
+        if backend_mode == "batch":
+            return self._batch_execute_prompts(valid_prompts, config)
+
         # Use parallel threads to generate interpretations for API models
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers_interpretation) as executor:
             future_to_idx = {
@@ -329,6 +335,76 @@ class NeuronInterpreter:
                 idx = future_to_idx[fut]
                 ordered_interpretations[idx] = fut.result()
             return ordered_interpretations
+
+    def _batch_execute_prompts(
+        self,
+        prompts: List[str],
+        config: InterpretConfig,
+    ) -> List[str]:
+        executor = self._batch_executor or OpenAIBatchExecutor(
+            endpoint="/v1/chat/completions",
+            task_name="interpret",
+        )
+        self._batch_executor = executor
+
+        requests: List[BatchRequest] = []
+        custom_ids: List[str] = []
+        for prompt in prompts:
+            custom_id = make_custom_id("interpret")
+            body = self._interpretation_request_body(prompt, config)
+            requests.append(BatchRequest(custom_id=custom_id, url="/v1/chat/completions", body=body))
+            custom_ids.append(custom_id)
+
+        result = executor.execute(requests, metadata={"type": "interpret"})
+        outputs: List[Optional[str]] = []
+        for custom_id in custom_ids:
+            response_body = result.responses.get(custom_id)
+            if not response_body:
+                outputs.append(None)
+                continue
+            choices = response_body.get("choices", [])
+            if not choices:
+                outputs.append(None)
+                continue
+            outputs.append(self._parse_interpretation(choices[0]["message"].get("content", "")))
+
+        if result.errors:
+            for custom_id, error in result.errors.items():
+                print(f"Batch interpretation error for request {custom_id}: {error}")
+
+        return outputs
+
+    def _interpretation_request_body(self, prompt: str, config: InterpretConfig) -> Dict[str, Any]:
+        model_id = resolve_model_name(self.interpreter_model)
+        body: Dict[str, Any] = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        api_kwargs = self._interpretation_api_kwargs(config)
+        if "timeout" in api_kwargs:
+            api_kwargs = {k: v for k, v in api_kwargs.items() if k != "timeout"}
+        body.update(api_kwargs)
+        return body
+
+    def _interpretation_api_kwargs(self, config: InterpretConfig) -> Dict[str, Any]:
+        if "gpt-5" in self.interpreter_model:
+            return {
+                "max_completion_tokens": config.llm.max_interpretation_tokens,
+                "reasoning_effort": "minimal",
+            }
+        if self.interpreter_model.startswith("o"):
+            return {
+                "max_completion_tokens": config.llm.max_interpretation_tokens,
+                "reasoning_effort": "low",
+            }
+
+        kwargs: Dict[str, Any] = {
+            "max_tokens": config.llm.max_interpretation_tokens,
+            "timeout": config.llm.timeout,
+        }
+        if config.llm.temperature is not None:
+            kwargs["temperature"] = config.llm.temperature
+        return kwargs
 
     def interpret_neurons(
         self,
@@ -456,6 +532,8 @@ class NeuronInterpreter:
             show_progress=show_progress,
             model=self.annotator_model,
             progress_desc=progress_desc,
+            backend=self.annotation_backend,
+            auto_batch_threshold=self.annotation_auto_batch_threshold,
             **annotation_kwargs
         )
 

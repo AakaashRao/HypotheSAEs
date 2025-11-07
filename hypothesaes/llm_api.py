@@ -37,6 +37,12 @@ model_abbrev_to_id = {
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 
+
+def resolve_model_name(model: str) -> str:
+    """Return the fully qualified model id for an alias."""
+
+    return model_abbrev_to_id.get(model, model)
+
 def get_client():
     """Get the OpenAI client, initializing it if necessary and caching it."""
     global _CLIENT_OPENAI
@@ -75,7 +81,7 @@ def get_completion(
         Exception: If all retries fail
     """
     client = get_client()
-    model_id = model_abbrev_to_id.get(model, model)
+    model_id = resolve_model_name(model)
     
     for attempt in range(max_retries):
         try:

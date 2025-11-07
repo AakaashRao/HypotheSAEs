@@ -11,7 +11,7 @@ from .sae import SparseAutoencoder, load_model, get_sae_checkpoint_name
 from .select_neurons import select_neurons
 from .interpret_neurons import NeuronInterpreter, InterpretConfig, ScoringConfig, LLMConfig, SamplingConfig
 from .utils import get_text_for_printing
-from .annotate import annotate_texts_with_concepts
+from .annotate import annotate_texts_with_concepts, BATCH_AUTO_THRESHOLD
 from .evaluation import score_hypotheses
 BASE_DIR = Path(__file__).parent.parent
 
@@ -240,6 +240,8 @@ def generate_hypotheses(
     n_workers_interpretation: int = 10,
     n_workers_annotation: int = 30,
     task_specific_instructions: Optional[str] = None,
+    llm_backend: str = "live",
+    annotation_backend: str = "live",
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, np.ndarray]]:
     """Generate interpretable hypotheses from text data using SAEs.
     
@@ -298,6 +300,8 @@ def generate_hypotheses(
         annotator_model=annotator_model,
         n_workers_interpretation=n_workers_interpretation,
         n_workers_annotation=n_workers_annotation,
+        llm_backend=llm_backend,
+        annotation_backend=annotation_backend,
     )
 
     interpret_config = InterpretConfig(
@@ -369,6 +373,8 @@ def evaluate_hypotheses(
     classification: Optional[bool] = None,
     n_workers_annotation: int = 30,
     corrected_pval_threshold: float = 0.1,
+    annotation_backend: str = "live",
+    annotation_auto_batch_threshold: int = BATCH_AUTO_THRESHOLD,
 ) -> pd.DataFrame:
     """Evaluate hypotheses on a heldout dataset.
     
@@ -402,6 +408,8 @@ def evaluate_hypotheses(
         model=annotator_model,
         cache_name=cache_name,
         n_workers=n_workers_annotation,
+        backend=annotation_backend,
+        auto_batch_threshold=annotation_auto_batch_threshold,
     )
     
     # Step 2: Evaluate annotations against the true labels
