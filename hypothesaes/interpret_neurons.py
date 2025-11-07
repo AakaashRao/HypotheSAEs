@@ -414,7 +414,7 @@ class NeuronInterpreter:
         if "gpt-5" in self.interpreter_model:
             # Force a generous token budget and low reasoning effort for GPT-5
             return {
-                "max_completion_tokens": 2000,
+                "max_completion_tokens": 5000,
                 "reasoning_effort": "low",
             }
         if self.interpreter_model.startswith("o"):
