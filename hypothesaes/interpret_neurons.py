@@ -158,14 +158,14 @@ class SamplingConfig:
     function: Callable = sample_top_zero
     n_examples: int = 20 # Number of examples to sample to prompt the interpreter
     random_seed: Optional[int] = 0 # Base random seed for example sampling; each interp candidate increments this seed by 1
-    max_words_per_example: Optional[int] = 256 # Maximum number of words per text example, truncated if necessary
+    max_words_per_example: Optional[int] = 512 # Maximum number of words per text example, truncated if necessary
     sampling_kwargs: Dict[str, Any] = field(default_factory=dict) # Extra keyword arguments for the sampling function
 
 @dataclass
 class LLMConfig:
     temperature: Optional[float] = None # Temperature for the interpreter model
     max_interpretation_tokens: int = 100 # Maximum number of tokens for each generated interpretation
-    timeout: float = 10.0 # Timeout for the interpreter model (in seconds)
+    timeout: float = 30.0 # Timeout for the interpreter model (in seconds)
     tokenizer_kwargs: Dict[str, Any] = field(default_factory=lambda: {"enable_thinking": True}) # tokenizer_kwargs are not used for API models
 
 @dataclass
@@ -179,7 +179,7 @@ class InterpretConfig:
 @dataclass
 class ScoringConfig:
     n_examples: int = 100 # Number of examples to score interpretation fidelity (half top-activating, half zero-activating)
-    max_words_per_example: Optional[int] = 256 # Maximum number of words per text example, truncated if necessary
+    max_words_per_example: Optional[int] = 512 # Maximum number of words per text example, truncated if necessary
     sampling_function: Callable = sample_top_zero # Function to sample examples for scoring
     sampling_kwargs: Dict[str, Any] = field(default_factory=dict) # Extra keyword arguments for the sampling function
 
