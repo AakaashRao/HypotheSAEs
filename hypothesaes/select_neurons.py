@@ -278,6 +278,60 @@ def select_neurons(
 # Coverage-based filtering utilities
 # -----------------------------------------------------------------------------
 
+def _coerce_group_labels(groups: Union[List, np.ndarray], n_samples: int) -> np.ndarray:
+    """Return a 1D object array of group labels, one per sample.
+
+    Accepts any of the following forms:
+    - 1D array/sequence of length ``n_samples`` (already a single group key per row)
+    - 2D array with shape (n_samples, n_group_cols) representing multiple group columns
+    - list/tuple of column arrays, each of length ``n_samples``
+    - pandas Series (length ``n_samples``) or DataFrame with the same number of rows
+
+    When multiple columns are provided, each row is converted to a tuple
+    representing the unique combination of the provided columns.
+    """
+    # Optional pandas support without a hard dependency
+    try:  # noqa: SIM105
+        import pandas as pd  # type: ignore
+    except Exception:  # pragma: no cover - pandas may not be installed
+        pd = None  # type: ignore
+
+    # pandas objects
+    if pd is not None:
+        if isinstance(groups, pd.Series):
+            arr = groups.to_numpy()
+            if len(arr) != n_samples:
+                raise ValueError("groups length must match number of rows in activations")
+            return arr.astype(object)
+        if isinstance(groups, pd.DataFrame):
+            if len(groups) != n_samples:
+                raise ValueError("groups length must match number of rows in activations")
+            return np.array([tuple(row) for row in groups.itertuples(index=False, name=None)], dtype=object)
+
+    # numpy / python sequences
+    arr = np.asarray(groups, dtype=object)
+    # Case 1: already a per-sample label vector
+    if arr.ndim == 1 and arr.shape[0] == n_samples:
+        return arr
+    # Case 2: 2D array of multiple columns
+    if arr.ndim == 2 and arr.shape[0] == n_samples:
+        return np.array([tuple(row) for row in arr], dtype=object)
+    # Case 3: list/tuple of column arrays
+    if isinstance(groups, (list, tuple)) and len(groups) > 0 and hasattr(groups[0], "__len__"):
+        # If this is a list of columns, zip them into tuples
+        if len(np.asarray(groups[0]).shape) == 1 and len(groups[0]) == n_samples:
+            cols = [np.asarray(col) for col in groups]
+            for c in cols:
+                if len(c) != n_samples:
+                    raise ValueError("All group columns must have the same length as activations")
+            return np.array(list(zip(*cols)), dtype=object)
+
+    raise ValueError(
+        "groups must be either: a 1D array of length n_samples, a 2D array with "
+        "n_samples rows, a list/tuple of column arrays, or a pandas Series/DataFrame"
+    )
+
+
 def filter_neurons_by_group_coverage(
     groups: Union[List, np.ndarray],
     activations: np.ndarray,
@@ -292,7 +346,9 @@ def filter_neurons_by_group_coverage(
     (positive activations if ``positive_only`` else non-zero activations) in at
     least ``min_groups_with_activity`` distinct groups.
     """
-    groups = np.asarray(groups)
+    # Normalize groups to a single label per sample; if multiple columns are
+    # provided, the label becomes a tuple of the column values for that row.
+    groups = _coerce_group_labels(groups, activations.shape[0])
     if activations.ndim != 2:
         raise ValueError("activations must be a 2D array (n_samples, n_neurons)")
     if groups.shape[0] != activations.shape[0]:

@@ -429,6 +429,32 @@ best_interp_df = pd.DataFrame({
         for neuron_idx in selected_neurons
     ],
 })
+
+Optional: filter neurons by group coverage
+You can pre-filter neurons to ensure they fire broadly and consistently across groups in your dataset. Groups can be defined by a single column (e.g., year) or by a combination of multiple columns (e.g., year + region). A neuron passes if it has at least min_activations_per_group positive activations in at least min_groups_with_activity distinct groups.
+
+Example usage:
+```python
+from hypothesaes import select_neurons_by_group_coverage
+
+# Using a single grouping column
+group_labels = df["year"]  # length = n_samples
+kept = select_neurons_by_group_coverage(
+    groups=group_labels,
+    activations=activations,  # shape (n_samples, n_neurons)
+    min_groups_with_activity=4,
+    min_activations_per_group=1000,
+)
+
+# Using multiple grouping columns (unique combinations are treated as groups)
+multi_groups = df[["year", "region"]]  # DataFrame with the same number of rows
+kept_multi = select_neurons_by_group_coverage(
+    groups=multi_groups,
+    activations=activations,
+    min_groups_with_activity=4,
+    min_activations_per_group=1000,
+)
+```
 ```
 
 #### Step 4: Evaluating Hypotheses ([`annotate.py`](https://github.com/rmovva/hypothesaes/blob/main/hypothesaes/annotate.py), [`evaluation.py`](https://github.com/rmovva/hypothesaes/blob/main/hypothesaes/evaluation.py))
