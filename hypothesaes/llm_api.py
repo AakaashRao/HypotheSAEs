@@ -123,10 +123,9 @@ def get_completion(
             if "max_output_tokens" not in resp_kwargs:
                 resp_kwargs["max_output_tokens"] = 5000
             effort = resp_kwargs.pop("reasoning_effort", None)
-            resp_kwargs["reasoning"] = {"effort": effort or 'low'}
+            resp_kwargs["reasoning"] = {"effort": effort or 'medium'}
             # Prefer concise text outputs to fit within token budget
-            if "text" not in resp_kwargs:
-                resp_kwargs["text"] = {"verbosity": "low"}
+
             response = client.responses.create(
                 model=model_id,
                 input=prompt,
