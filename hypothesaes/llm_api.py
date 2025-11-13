@@ -4,7 +4,6 @@ import os
 import time
 import openai
 import logging
-import pdb
 
 _CLIENT_OPENAI = None  # Module-level cache for the OpenAI client
 
@@ -82,7 +81,7 @@ def get_completion(
     prompt: str,
     model: str = DEFAULT_MODEL,
     timeout: float = 300.0,
-    max_retries: int = 3,
+    max_retries: int = 5,
     backoff_factor: float = 2.0,
     **kwargs
 ) -> str:
@@ -136,8 +135,13 @@ def get_completion(
             status = getattr(response, "status", None)
             if status and status != "completed":
                 details = getattr(response, "incomplete_details", None)
-                pdb.set_trace()
-                raise RuntimeError(f"Responses API returned status={status}; details={details}")
+                err_msg = f"Responses API returned status={status}; details={details}"
+                if attempt == max_retries - 1:
+                    raise RuntimeError(err_msg)
+                wait_time = timeout * (backoff_factor ** attempt)
+                print(f"{err_msg}. Retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                continue
             text = _extract_output_text(response)
             return text
             
